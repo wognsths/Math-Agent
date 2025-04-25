@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends, File, UploadFile
 from pydantic import BaseModel
 from services.latex import LaTeXService
 from services.ocr import OCRService
-from typing import Dict, Any, Optional
+from services.solution import SolutionService
+from typing import Dict, Any, Optional, List
 import os
 import json
 import uuid
@@ -34,6 +35,23 @@ class ImageUploadResponse(BaseModel):
 class OCRResponse(BaseModel):
     ocr_result: str
     image_id: str
+
+class SolutionRequest(BaseModel):
+    latex: str
+    image_id: Optional[str] = None
+    options: Optional[Dict[str, Any]] = None
+
+class SolutionStep(BaseModel):
+    step_number: int
+    explanation: str
+    latex: str
+
+class SolutionResponse(BaseModel):
+    problem: str
+    steps: List[SolutionStep]
+    final_answer: str
+    image_id: Optional[str] = None
+    saved_file_path: Optional[str] = None
 
 @router.post("/upload-image", response_model=ImageUploadResponse)
 async def upload_image(file: UploadFile = File(...)):
@@ -155,6 +173,44 @@ async def verify_latex_context(request: LatexVerifyRequest):
         return LatexVerifyResponse(
             is_valid=is_valid,
             correction=correction,
+            saved_file_path=file_path
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/generate-solution", response_model=SolutionResponse)
+async def generate_solution(request: SolutionRequest):
+    """Generate step-by-step solution for a mathematical problem expressed in LaTeX"""
+    try:
+        # Generate solution using solution service
+        solution_service = SolutionService()
+        problem, steps, final_answer = solution_service.generate_solution(request.latex, options=request.options)
+        
+        # Save results
+        result_id = str(uuid.uuid4())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_solution_{result_id}.json"
+        file_path = os.path.join(settings.SOLUTION_DIR, filename)
+        
+        # Prepare data for saving
+        data = {
+            "id": result_id,
+            "timestamp": timestamp,
+            "image_id": request.image_id,
+            "problem": problem,
+            "steps": [step.dict() for step in steps],
+            "final_answer": final_answer,
+        }
+        
+        # Save to file
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        return SolutionResponse(
+            problem=problem,
+            steps=steps,
+            final_answer=final_answer,
+            image_id=request.image_id,
             saved_file_path=file_path
         )
     except Exception as e:
